@@ -6,6 +6,8 @@ models, as well as the multi-platform helper and all internal utility functions.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from oss_revenue_calc.calculator import (
@@ -105,6 +107,18 @@ class TestAnnualisedAiDownloads:
         stats = _make_stats(total_downloads=0, period_days=365)
         assert _annualised_ai_downloads(stats, ai_share=0.50) == 0
 
+    def test_30_day_result_is_larger_than_raw_for_same_downloads(self) -> None:
+        """30-day stats annualise to a larger figure than the raw count."""
+        stats = _make_stats(total_downloads=100_000, period_days=30)
+        result = _annualised_ai_downloads(stats, ai_share=1.0)
+        # Annualised should be 100_000 * (365/30) > 100_000
+        assert result > 100_000
+
+    def test_365_day_with_fractional_share(self) -> None:
+        stats = _make_stats(total_downloads=7_500_000, period_days=365)
+        result = _annualised_ai_downloads(stats, ai_share=0.123)
+        assert result == int(7_500_000 * 0.123)
+
 
 # ---------------------------------------------------------------------------
 # _compute_per_download_rate tests
@@ -115,41 +129,62 @@ class TestComputePerDownloadRate:
 
     def test_basic_calculation(self) -> None:
         # rate = (10.0 * 0.05) / 1000 = 0.5 / 1000 = 0.0005
-        platform = _make_platform(monthly_arpu=10.0, oss_revenue_share=0.05,
-                                   downloads_per_subscriber_per_month=1000.0)
+        platform = _make_platform(
+            monthly_arpu=10.0,
+            oss_revenue_share=0.05,
+            downloads_per_subscriber_per_month=1000.0,
+        )
         rate = _compute_per_download_rate(platform)
         assert rate == pytest.approx(0.0005)
 
     def test_higher_arpu(self) -> None:
-        platform = _make_platform(monthly_arpu=20.0, oss_revenue_share=0.05,
-                                   downloads_per_subscriber_per_month=1000.0)
+        platform = _make_platform(
+            monthly_arpu=20.0,
+            oss_revenue_share=0.05,
+            downloads_per_subscriber_per_month=1000.0,
+        )
         rate = _compute_per_download_rate(platform)
         assert rate == pytest.approx(0.001)
 
     def test_higher_oss_share(self) -> None:
-        platform = _make_platform(monthly_arpu=10.0, oss_revenue_share=0.10,
-                                   downloads_per_subscriber_per_month=1000.0)
+        platform = _make_platform(
+            monthly_arpu=10.0,
+            oss_revenue_share=0.10,
+            downloads_per_subscriber_per_month=1000.0,
+        )
         rate = _compute_per_download_rate(platform)
         assert rate == pytest.approx(0.001)
 
     def test_more_downloads_per_subscriber_reduces_rate(self) -> None:
-        platform_low = _make_platform(monthly_arpu=10.0, oss_revenue_share=0.05,
-                                       downloads_per_subscriber_per_month=500.0)
-        platform_high = _make_platform(monthly_arpu=10.0, oss_revenue_share=0.05,
-                                        downloads_per_subscriber_per_month=2000.0)
+        platform_low = _make_platform(
+            monthly_arpu=10.0,
+            oss_revenue_share=0.05,
+            downloads_per_subscriber_per_month=500.0,
+        )
+        platform_high = _make_platform(
+            monthly_arpu=10.0,
+            oss_revenue_share=0.05,
+            downloads_per_subscriber_per_month=2000.0,
+        )
         rate_low = _compute_per_download_rate(platform_low)
         rate_high = _compute_per_download_rate(platform_high)
         assert rate_low > rate_high
 
     def test_zero_arpu_gives_zero_rate(self) -> None:
-        platform = _make_platform(monthly_arpu=0.0, oss_revenue_share=0.05,
-                                   downloads_per_subscriber_per_month=1000.0)
+        platform = _make_platform(
+            monthly_arpu=0.0,
+            oss_revenue_share=0.05,
+            downloads_per_subscriber_per_month=1000.0,
+        )
         rate = _compute_per_download_rate(platform)
         assert rate == pytest.approx(0.0)
 
     def test_zero_oss_share_gives_zero_rate(self) -> None:
-        platform = _make_platform(monthly_arpu=10.0, oss_revenue_share=0.0,
-                                   downloads_per_subscriber_per_month=1000.0)
+        platform = _make_platform(
+            monthly_arpu=10.0,
+            oss_revenue_share=0.0,
+            downloads_per_subscriber_per_month=1000.0,
+        )
         rate = _compute_per_download_rate(platform)
         assert rate == pytest.approx(0.0)
 
@@ -159,6 +194,36 @@ class TestComputePerDownloadRate:
         rate = _compute_per_download_rate(copilot)
         assert rate > 0.0
         assert rate < 1.0  # Should be well under $1 per download
+
+    def test_rate_doubles_when_arpu_doubles(self) -> None:
+        platform_base = _make_platform(
+            monthly_arpu=10.0,
+            oss_revenue_share=0.05,
+            downloads_per_subscriber_per_month=1000.0,
+        )
+        platform_double = _make_platform(
+            monthly_arpu=20.0,
+            oss_revenue_share=0.05,
+            downloads_per_subscriber_per_month=1000.0,
+        )
+        rate_base = _compute_per_download_rate(platform_base)
+        rate_double = _compute_per_download_rate(platform_double)
+        assert rate_double == pytest.approx(rate_base * 2)
+
+    def test_rate_halves_when_dps_doubles(self) -> None:
+        platform_base = _make_platform(
+            monthly_arpu=10.0,
+            oss_revenue_share=0.05,
+            downloads_per_subscriber_per_month=1000.0,
+        )
+        platform_double_dps = _make_platform(
+            monthly_arpu=10.0,
+            oss_revenue_share=0.05,
+            downloads_per_subscriber_per_month=2000.0,
+        )
+        rate_base = _compute_per_download_rate(platform_base)
+        rate_double_dps = _compute_per_download_rate(platform_double_dps)
+        assert rate_double_dps == pytest.approx(rate_base / 2)
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +235,10 @@ class TestEstimateTotalPlatformAiDownloads:
 
     def test_basic_estimate(self) -> None:
         # total = 1_000_000 * 1_000 * 12 = 12_000_000_000
-        platform = _make_platform(subscribers=1_000_000,
-                                   downloads_per_subscriber_per_month=1_000.0)
+        platform = _make_platform(
+            subscribers=1_000_000,
+            downloads_per_subscriber_per_month=1_000.0,
+        )
         total = _estimate_total_platform_ai_downloads(platform)
         assert total == 12_000_000_000
 
@@ -181,8 +248,10 @@ class TestEstimateTotalPlatformAiDownloads:
         assert total >= 1
 
     def test_result_is_positive_integer(self) -> None:
-        platform = _make_platform(subscribers=500_000,
-                                   downloads_per_subscriber_per_month=800.0)
+        platform = _make_platform(
+            subscribers=500_000,
+            downloads_per_subscriber_per_month=800.0,
+        )
         total = _estimate_total_platform_ai_downloads(platform)
         assert isinstance(total, int)
         assert total > 0
@@ -190,8 +259,34 @@ class TestEstimateTotalPlatformAiDownloads:
     def test_scales_with_subscribers(self) -> None:
         platform_small = _make_platform(subscribers=100_000)
         platform_large = _make_platform(subscribers=1_000_000)
-        assert (_estimate_total_platform_ai_downloads(platform_large)
-                > _estimate_total_platform_ai_downloads(platform_small))
+        assert (
+            _estimate_total_platform_ai_downloads(platform_large)
+            > _estimate_total_platform_ai_downloads(platform_small)
+        )
+
+    def test_scales_with_downloads_per_subscriber(self) -> None:
+        platform_low = _make_platform(
+            subscribers=100_000,
+            downloads_per_subscriber_per_month=100.0,
+        )
+        platform_high = _make_platform(
+            subscribers=100_000,
+            downloads_per_subscriber_per_month=5_000.0,
+        )
+        assert (
+            _estimate_total_platform_ai_downloads(platform_high)
+            > _estimate_total_platform_ai_downloads(platform_low)
+        )
+
+    def test_formula_is_subscribers_times_dps_times_12(self) -> None:
+        subscribers = 250_000
+        dps = 750.0
+        platform = _make_platform(
+            subscribers=subscribers,
+            downloads_per_subscriber_per_month=dps,
+        )
+        expected = int(subscribers * dps * 12)
+        assert _estimate_total_platform_ai_downloads(platform) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -207,8 +302,10 @@ class TestResolveTotalPlatformAiDownloads:
         assert result == 999_000
 
     def test_none_triggers_estimate(self) -> None:
-        platform = _make_platform(subscribers=1_000_000,
-                                   downloads_per_subscriber_per_month=1_000.0)
+        platform = _make_platform(
+            subscribers=1_000_000,
+            downloads_per_subscriber_per_month=1_000.0,
+        )
         estimated = _estimate_total_platform_ai_downloads(platform)
         result = _resolve_total_platform_ai_downloads(platform, None)
         assert result == estimated
@@ -221,6 +318,16 @@ class TestResolveTotalPlatformAiDownloads:
     def test_negative_provided_value_coerced_to_one(self) -> None:
         platform = _make_platform()
         result = _resolve_total_platform_ai_downloads(platform, -100)
+        assert result == 1
+
+    def test_large_provided_value_preserved(self) -> None:
+        platform = _make_platform()
+        result = _resolve_total_platform_ai_downloads(platform, 1_000_000_000)
+        assert result == 1_000_000_000
+
+    def test_provided_value_one_preserved(self) -> None:
+        platform = _make_platform()
+        result = _resolve_total_platform_ai_downloads(platform, 1)
         assert result == 1
 
 
@@ -255,6 +362,17 @@ class TestComputePackageDownloadShare:
         for pkg_dl in [0, 100, 1_000, 5_000, 10_000, 50_000]:
             share = _compute_package_download_share(pkg_dl, 10_000)
             assert 0.0 <= share <= 1.0
+
+    def test_small_share(self) -> None:
+        share = _compute_package_download_share(1, 1_000_000)
+        assert share == pytest.approx(1e-6)
+
+    def test_proportionality(self) -> None:
+        """Doubling package downloads doubles the share (up to the cap)."""
+        total = 10_000_000
+        share_a = _compute_package_download_share(100_000, total)
+        share_b = _compute_package_download_share(200_000, total)
+        assert share_b == pytest.approx(share_a * 2)
 
 
 # ---------------------------------------------------------------------------
@@ -335,11 +453,11 @@ class TestCalculateProrata:
         total = 10_000_000
         result_small = calculate_prorata(
             stats, platform_small, ai_share=0.30,
-            total_platform_ai_downloads=total
+            total_platform_ai_downloads=total,
         )
         result_large = calculate_prorata(
             stats, platform_large, ai_share=0.30,
-            total_platform_ai_downloads=total
+            total_platform_ai_downloads=total,
         )
         assert result_large.annual_revenue_usd > result_small.annual_revenue_usd
 
@@ -403,6 +521,30 @@ class TestCalculateProrata:
         copilot = get_platform_or_raise("copilot")
         result = calculate_prorata(stats, copilot, ai_share=0.30)
         assert result.annual_revenue_usd > 0.0
+
+    def test_notes_contains_useful_info(self) -> None:
+        """Notes should mention key quantities used in calculation."""
+        stats = _make_stats(total_downloads=1_000_000, period_days=365)
+        platform = _make_platform()
+        result = calculate_prorata(
+            stats, platform, ai_share=0.30, total_platform_ai_downloads=10_000_000
+        )
+        # Notes should mention OSS pool and share
+        assert result.notes is not None
+        assert "pool" in result.notes.lower() or "share" in result.notes.lower()
+
+    def test_boundary_ai_share_one(self) -> None:
+        stats = _make_stats(total_downloads=1_000_000, period_days=365)
+        platform = _make_platform(
+            subscribers=1_000_000,
+            monthly_arpu=10.0,
+            oss_revenue_share=0.05,
+        )
+        total = 1_000_000  # same as package AI downloads → 100% share
+        result = calculate_prorata(
+            stats, platform, ai_share=1.0, total_platform_ai_downloads=total
+        )
+        assert result.annual_revenue_usd == pytest.approx(platform.annual_oss_pool, rel=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -542,6 +684,37 @@ class TestCalculatePeruse:
         result = calculate_peruse(stats, copilot, ai_share=0.30)
         assert result.annual_revenue_usd > 0.0
 
+    def test_notes_mentions_per_download_rate(self) -> None:
+        """Notes should mention the per-download rate."""
+        stats = _make_stats()
+        platform = _make_platform()
+        result = calculate_peruse(stats, platform, ai_share=0.30)
+        assert result.notes is not None
+        assert "rate" in result.notes.lower() or "per" in result.notes.lower()
+
+    def test_subscribers_do_not_affect_revenue_directly(self) -> None:
+        """Per-use revenue does not directly scale with subscriber count."""
+        stats = _make_stats(total_downloads=1_000_000, period_days=365)
+        platform_small = _make_platform(
+            subscribers=100_000,
+            monthly_arpu=10.0,
+            oss_revenue_share=0.05,
+            downloads_per_subscriber_per_month=1_000.0,
+        )
+        platform_large = _make_platform(
+            subscribers=10_000_000,
+            monthly_arpu=10.0,
+            oss_revenue_share=0.05,
+            downloads_per_subscriber_per_month=1_000.0,
+        )
+        result_small = calculate_peruse(stats, platform_small, ai_share=0.30)
+        result_large = calculate_peruse(stats, platform_large, ai_share=0.30)
+        # Per-download rate is the same (same arpu, oss_share, dps)
+        # So revenue should be the same regardless of subscriber count
+        assert result_small.annual_revenue_usd == pytest.approx(
+            result_large.annual_revenue_usd
+        )
+
 
 # ---------------------------------------------------------------------------
 # calculate_revenue tests
@@ -680,7 +853,6 @@ class TestCalculateRevenue:
 
     def test_to_dict_serialisable(self) -> None:
         """Result can be serialised to a dictionary without errors."""
-        import json
         stats = _make_stats()
         platform = _make_platform()
         result = calculate_revenue(stats, platform, ai_share=0.30)
@@ -701,6 +873,42 @@ class TestCalculateRevenue:
         result = calculate_revenue(stats, platform, ai_share=1.0)
         assert result.ai_attributed_downloads == 1_000_000
 
+    def test_model_results_have_positive_revenue_for_nonzero_inputs(self) -> None:
+        stats = _make_stats(total_downloads=1_000_000, period_days=365)
+        platform = _make_platform(
+            subscribers=1_000_000,
+            monthly_arpu=10.0,
+            oss_revenue_share=0.05,
+        )
+        result = calculate_revenue(stats, platform, ai_share=0.30)
+        for mr in result.model_results:
+            assert mr.annual_revenue_usd > 0.0
+            assert mr.monthly_revenue_usd > 0.0
+
+    def test_package_download_share_reflects_explicit_total(self) -> None:
+        stats = _make_stats(total_downloads=1_000_000, period_days=365)
+        platform = _make_platform()
+        total = 10_000_000
+        result = calculate_revenue(
+            stats, platform, ai_share=0.30,
+            total_platform_ai_downloads=total,
+        )
+        # ai downloads = 300_000, total = 10_000_000, share = 0.03
+        assert result.package_download_share == pytest.approx(0.03)
+
+    def test_npm_registry_stats_work(self) -> None:
+        """Revenue calculation works for npm registry stats."""
+        stats = PackageStats(
+            package_name="lodash",
+            registry=Registry.NPM,
+            total_downloads=50_000_000,
+            period_days=365,
+        )
+        platform = _make_platform()
+        result = calculate_revenue(stats, platform, ai_share=0.20)
+        assert result.package_stats.registry == Registry.NPM
+        assert result.average_annual_revenue >= 0.0
+
 
 # ---------------------------------------------------------------------------
 # calculate_revenue_for_platforms tests
@@ -711,7 +919,10 @@ class TestCalculateRevenueForPlatforms:
 
     def test_returns_one_result_per_platform(self) -> None:
         stats = _make_stats()
-        platforms = [_make_platform(slug=f"p{i}", name=f"Platform {i}") for i in range(3)]
+        platforms = [
+            _make_platform(slug=f"p{i}", name=f"Platform {i}")
+            for i in range(3)
+        ]
         results = calculate_revenue_for_platforms(stats, platforms, ai_share=0.30)
         assert len(results) == 3
 
@@ -742,7 +953,7 @@ class TestCalculateRevenueForPlatforms:
         stats = _make_stats()
         platform = _make_platform()
         with pytest.raises(ValueError, match="ai_share"):
-            calculate_revenue_for_platforms([stats], [platform], ai_share=2.0)  # type: ignore
+            calculate_revenue_for_platforms(stats, [platform], ai_share=2.0)
 
     def test_prorata_only_model(self) -> None:
         stats = _make_stats()
@@ -752,6 +963,15 @@ class TestCalculateRevenueForPlatforms:
         )
         assert len(results[0].model_results) == 1
         assert results[0].model_results[0].model == RevenueModel.PRORATA
+
+    def test_peruse_only_model(self) -> None:
+        stats = _make_stats()
+        platforms = [_make_platform(slug="y", name="Y")]
+        results = calculate_revenue_for_platforms(
+            stats, platforms, ai_share=0.30, model=RevenueModel.PERUSE
+        )
+        assert len(results[0].model_results) == 1
+        assert results[0].model_results[0].model == RevenueModel.PERUSE
 
     def test_order_preserved(self) -> None:
         """Results are returned in the same order as the input platforms."""
@@ -774,6 +994,31 @@ class TestCalculateRevenueForPlatforms:
         )
         # Copilot and Cursor have different configs, so revenues should differ
         assert results[0].average_annual_revenue != results[1].average_annual_revenue
+
+    def test_single_platform_in_list(self) -> None:
+        stats = _make_stats()
+        platform = _make_platform()
+        results = calculate_revenue_for_platforms(stats, [platform], ai_share=0.30)
+        assert len(results) == 1
+        assert results[0].platform is platform
+
+    def test_each_result_shares_same_package_stats(self) -> None:
+        """All results should reference the same PackageStats object."""
+        stats = _make_stats()
+        platforms = [
+            _make_platform(slug="a", name="A"),
+            _make_platform(slug="b", name="B"),
+        ]
+        results = calculate_revenue_for_platforms(stats, platforms, ai_share=0.30)
+        for result in results:
+            assert result.package_stats is stats
+
+    def test_all_results_have_same_ai_share(self) -> None:
+        stats = _make_stats()
+        platforms = list_platforms()[:3]
+        results = calculate_revenue_for_platforms(stats, platforms, ai_share=0.35)
+        for result in results:
+            assert result.ai_share == pytest.approx(0.35)
 
 
 # ---------------------------------------------------------------------------
@@ -847,8 +1092,8 @@ class TestNumericalPrecision:
             platform.annual_oss_pool, rel=1e-6
         )
 
-    def test_prorata_tiny_share_still_positive(self) -> None:
-        """Even a package with 0.001% share should get a positive (tiny) amount."""
+    def test_prorata_tiny_share_still_non_negative(self) -> None:
+        """Even a package with 0.001% share should get a non-negative amount."""
         stats = _make_stats(total_downloads=1_000, period_days=365)
         platform = _make_platform()
         total = 1_000_000_000_000  # 1 trillion
@@ -856,7 +1101,7 @@ class TestNumericalPrecision:
             stats, platform, ai_share=0.30,
             total_platform_ai_downloads=total,
         )
-        # Revenue should be tiny but positive
+        # Revenue should be tiny but non-negative
         assert result.annual_revenue_usd >= 0.0
 
     def test_peruse_exact_rate_for_copilot(self) -> None:
@@ -866,3 +1111,49 @@ class TestNumericalPrecision:
         expected_rate = (10.0 * 0.05) / 1200.0
         actual_rate = _compute_per_download_rate(copilot)
         assert actual_rate == pytest.approx(expected_rate)
+
+    def test_prorata_50_percent_share_gets_half_pool(self) -> None:
+        """Package with 50% of platform downloads gets half the OSS pool."""
+        stats = _make_stats(total_downloads=5_000_000, period_days=365)
+        platform = _make_platform(
+            subscribers=1_000_000,
+            monthly_arpu=10.0,
+            oss_revenue_share=0.05,
+        )
+        # ai downloads = 5_000_000 * 1.0 = 5_000_000
+        # total = 10_000_000
+        # share = 0.5
+        # oss pool = 120_000_000 * 0.05 = 6_000_000
+        # revenue = 6_000_000 * 0.5 = 3_000_000
+        result = calculate_prorata(
+            stats, platform,
+            ai_share=1.0,
+            total_platform_ai_downloads=10_000_000,
+        )
+        expected = platform.annual_oss_pool * 0.5
+        assert result.annual_revenue_usd == pytest.approx(expected, rel=1e-6)
+
+    def test_peruse_revenue_proportional_to_downloads(self) -> None:
+        """Doubling downloads doubles per-use revenue."""
+        platform = _make_platform(
+            monthly_arpu=10.0,
+            oss_revenue_share=0.05,
+            downloads_per_subscriber_per_month=1000.0,
+        )
+        stats_base = _make_stats(total_downloads=1_000_000, period_days=365)
+        stats_double = _make_stats(total_downloads=2_000_000, period_days=365)
+        result_base = calculate_peruse(stats_base, platform, ai_share=0.30)
+        result_double = calculate_peruse(stats_double, platform, ai_share=0.30)
+        assert result_double.annual_revenue_usd == pytest.approx(
+            result_base.annual_revenue_usd * 2, rel=1e-6
+        )
+
+    def test_peruse_revenue_proportional_to_ai_share(self) -> None:
+        """Doubling ai_share doubles per-use revenue."""
+        platform = _make_platform()
+        stats = _make_stats(total_downloads=1_000_000, period_days=365)
+        result_base = calculate_peruse(stats, platform, ai_share=0.20)
+        result_double = calculate_peruse(stats, platform, ai_share=0.40)
+        assert result_double.annual_revenue_usd == pytest.approx(
+            result_base.annual_revenue_usd * 2, rel=1e-6
+        )
